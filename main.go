@@ -16,47 +16,144 @@ func toKebabCase(s string) string {
 	s = strings.ReplaceAll(s, "UI", "Ui")
 
 	var result strings.Builder
+	var prevIsUpper bool
 	for i, r := range s {
-		if i > 0 && unicode.IsUpper(r) {
+		isUpper := unicode.IsUpper(r)
+
+		if i > 0 && isUpper && (!prevIsUpper || (i+1 < len(s) && unicode.IsLower(rune(s[i+1])))) {
 			result.WriteRune('-')
 		}
+
 		result.WriteRune(unicode.ToLower(r))
+		prevIsUpper = isUpper
 	}
 	return result.String()
 }
 
 func isPascalCase(s string) bool {
-	if len(s) == 0 {
+	if strings.HasSuffix(s, "Props") || strings.HasSuffix(s, "Emits") || strings.HasSuffix(s, "Context") {
 		return false
 	}
 
-	if !unicode.IsUpper(rune(s[0])) {
-		return false
-	}
-
-	hasMoreUpper := false
-	for _, r := range s[1:] {
-		if unicode.IsUpper(r) {
-			hasMoreUpper = true
-			break
+	skipWords := []string{"HTML", "Ref", "VModel", "Component", "Primitive", "Variants", "Omit",
+		"NAME", "AGE", "ICON", "WIDTH", "MOBILE", "SHORTCUT", "SOURCE", "Provider", "Portal"}
+	for _, word := range skipWords {
+		if strings.Contains(s, word) {
+			return false
 		}
 	}
-	return hasMoreUpper
+
+	componentPrefixes := []string{
+		"Sidebar",
+		"Accordion",
+		"Alert",
+		"AlertDialog",
+		"AspectRatio",
+		"Avatar",
+		"Badge",
+		"Breadcrumb",
+		"Button",
+		"Calendar",
+		"Card",
+		"Carousel",
+		"Checkbox",
+		"Collapsible",
+		"Combobox",
+		"Command",
+		"ContextMenu",
+		"DataTable",
+		"DatePicker",
+		"Dialog",
+		"Drawer",
+		"DropdownMenu",
+		"Form",
+		"HoverCard",
+		"Input",
+		"Label",
+		"Menubar",
+		"NavigationMenu",
+		"NumberField",
+		"Pagination",
+		"PinInput",
+		"Popover",
+		"Progress",
+		"RadioGroup",
+		"RangeCalendar",
+		"Resizable",
+		"ScrollArea",
+		"Select",
+		"Separator",
+		"Sheet",
+		"Skeleton",
+		"Slider",
+		"Sonner",
+		"Stepper",
+		"Switch",
+		"Table",
+		"Tabs",
+		"TagsInput",
+		"Textarea",
+		"Toast",
+		"Toggle",
+		"ToggleGroup",
+		"Tooltip",
+	}
+
+	for _, prefix := range componentPrefixes {
+		if strings.HasPrefix(s, prefix) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func findPascalCaseImports(content string) []string {
-	importRegex := regexp.MustCompile(`(?:import|from ['"]\./|from ['"]@/components/ui/[^'"]+/)([A-Z][a-zA-Z]+)`)
-	matches := importRegex.FindAllStringSubmatch(content, -1)
-
 	found := make(map[string]bool)
 	var results []string
 
-	for _, match := range matches {
-		if len(match) > 1 && isPascalCase(match[1]) {
-			componentName := match[1]
-			if !found[componentName] {
-				found[componentName] = true
-				results = append(results, componentName)
+	singleLineCommentRegex := regexp.MustCompile(`//.*$`)
+	lines := strings.Split(content, "\n")
+	var cleanedLines []string
+	for _, line := range lines {
+		cleanedLine := singleLineCommentRegex.ReplaceAllString(line, "")
+		if strings.TrimSpace(cleanedLine) != "" {
+			cleanedLines = append(cleanedLines, cleanedLine)
+		}
+	}
+	cleanContent := strings.Join(cleanedLines, "\n")
+
+	multiLineCommentRegex := regexp.MustCompile(`/\*[\s\S]*?\*/`)
+	cleanContent = multiLineCommentRegex.ReplaceAllString(cleanContent, "")
+
+	patterns := []string{
+		`import\s+([A-Z][a-zA-Z0-9]+)(?:\s*,\s*([A-Z][a-zA-Z0-9]+))*\s+from`,
+		`import\s*{\s*([A-Z][a-zA-Z0-9]+(?:\s*,\s*[A-Z][a-zA-Z0-9]+)*)\s*}\s*from`,
+		`from\s+['"].*?/([A-Z][a-zA-Z0-9]+)\.vue['"]`,
+		`from\s+['"].*?/([A-Z][a-zA-Z0-9]+)['"]`,
+		`export\s*{\s*default\s+as\s+([A-Z][a-zA-Z0-9]+)\s*}\s*from\s*['"]`,
+		`export\s*{\s*([A-Z][a-zA-Z0-9]+(?:\s*,\s*[A-Z][a-zA-Z0-9]+)*)\s*}\s*from\s*['"]`,
+		`import\s*{\s*([A-Z][a-zA-Z0-9]+(?:\s*,\s*[A-Z][a-zA-Z0-9]+)*)\s*}\s*from\s*['"].*?/[A-Z][a-zA-Z]+['"]`,
+	}
+
+	for _, pattern := range patterns {
+		regex := regexp.MustCompile(pattern)
+		matches := regex.FindAllStringSubmatch(cleanContent, -1)
+		for _, match := range matches {
+			for i := 1; i < len(match); i++ {
+				if match[i] == "" {
+					continue
+				}
+				components := strings.Split(match[i], ",")
+				for _, component := range components {
+					component = strings.TrimSpace(component)
+					if component != "" && isPascalCase(component) {
+						if !found[component] {
+							found[component] = true
+							results = append(results, component)
+						}
+					}
+				}
 			}
 		}
 	}
@@ -143,34 +240,81 @@ func updateFileContent(filePath string) error {
 	originalContent := newContent
 
 	for oldName, newName := range globalRenames {
-		importPatterns := []struct {
+
+		stringPatterns := []struct {
 			old string
 			new string
 		}{
-			{fmt.Sprintf("from '@/components/ui/sheet/%s.vue'", oldName), fmt.Sprintf("from '@/components/ui/sheet/%s.vue'", newName)},
-			{fmt.Sprintf("from '@/components/ui/sheet/%s'", oldName), fmt.Sprintf("from '@/components/ui/sheet/%s'", newName)},
-			{fmt.Sprintf("from '@/components/ui/%s/%s.vue'", strings.ToLower(oldName), oldName), fmt.Sprintf("from '@/components/ui/%s/%s.vue'", strings.ToLower(newName), newName)},
-			{fmt.Sprintf("from '@/components/ui/%s'", oldName), fmt.Sprintf("from '@/components/ui/%s'", newName)},
 
-			{fmt.Sprintf("import %s from '@/components/ui/sheet/%s.vue'", oldName, oldName), fmt.Sprintf("import %s from '@/components/ui/sheet/%s.vue'", oldName, newName)},
-			{fmt.Sprintf("import %s from '@/components/ui/%s/%s.vue'", oldName, strings.ToLower(oldName), oldName), fmt.Sprintf("import %s from '@/components/ui/%s/%s.vue'", oldName, strings.ToLower(newName), newName)},
-			{fmt.Sprintf("import %s from './sheet/%s.vue'", oldName, oldName), fmt.Sprintf("import %s from './sheet/%s.vue'", oldName, newName)},
+			{fmt.Sprintf("export { default as %s } from './%s.vue'", oldName, oldName), fmt.Sprintf("export { default as %s } from './%s.vue'", oldName, newName)},
+
+			{fmt.Sprintf("from '@/components/ui/%s.vue'", oldName), fmt.Sprintf("from '@/components/ui/%s.vue'", newName)},
+			{fmt.Sprintf("from '@/components/ui/%s'", oldName), fmt.Sprintf("from '@/components/ui/%s'", newName)},
+			{fmt.Sprintf("from '~/components/ui/%s.vue'", oldName), fmt.Sprintf("from '~/components/ui/%s.vue'", newName)},
+			{fmt.Sprintf("from '~/components/ui/%s'", oldName), fmt.Sprintf("from '~/components/ui/%s'", newName)},
 
 			{fmt.Sprintf("from './%s.vue'", oldName), fmt.Sprintf("from './%s.vue'", newName)},
 			{fmt.Sprintf("from './%s'", oldName), fmt.Sprintf("from './%s'", newName)},
 			{fmt.Sprintf("from '../%s.vue'", oldName), fmt.Sprintf("from '../%s.vue'", newName)},
 			{fmt.Sprintf("from '../%s'", oldName), fmt.Sprintf("from '../%s'", newName)},
+			{fmt.Sprintf("from '../../%s.vue'", oldName), fmt.Sprintf("from '../../%s.vue'", newName)},
+			{fmt.Sprintf("from '../../%s'", oldName), fmt.Sprintf("from '../../%s'", newName)},
 
+			{fmt.Sprintf("import %s from '@/components/ui/%s.vue'", oldName, oldName), fmt.Sprintf("import %s from '@/components/ui/%s.vue'", oldName, newName)},
+			{fmt.Sprintf("import %s from '~/components/ui/%s.vue'", oldName, oldName), fmt.Sprintf("import %s from '~/components/ui/%s.vue'", oldName, newName)},
 			{fmt.Sprintf("import %s from './%s.vue'", oldName, oldName), fmt.Sprintf("import %s from './%s.vue'", oldName, newName)},
+			{fmt.Sprintf("import { %s } from '@/components/ui/%s'", oldName, oldName), fmt.Sprintf("import { %s } from '@/components/ui/%s'", oldName, newName)},
 
 			{fmt.Sprintf("/%s/%s.vue'", oldName, oldName), fmt.Sprintf("/%s/%s.vue'", newName, newName)},
 			{fmt.Sprintf("/%s/%s'", oldName, oldName), fmt.Sprintf("/%s/%s'", newName, newName)},
+
+			{fmt.Sprintf("from '@/components/ui/%s/%s.vue'", oldName, oldName), fmt.Sprintf("from '@/components/ui/%s/%s.vue'", newName, newName)},
+			{fmt.Sprintf("from '@/components/ui/%s/%s'", oldName, oldName), fmt.Sprintf("from '@/components/ui/%s/%s'", newName, newName)},
+			{fmt.Sprintf("import %s from '@/components/ui/%s/%s.vue'", oldName, oldName, oldName), fmt.Sprintf("import %s from '@/components/ui/%s/%s.vue'", oldName, newName, newName)},
+			{fmt.Sprintf("import { %s } from '@/components/ui/%s/%s'", oldName, oldName, oldName), fmt.Sprintf("import { %s } from '@/components/ui/%s/%s'", oldName, newName, newName)},
+
+			{fmt.Sprintf("from '@/components/ui/%s/%s'", oldName, oldName+"Content"), fmt.Sprintf("from '@/components/ui/%s/%s'", newName, newName+"-content")},
+			{fmt.Sprintf("import { %sContent } from '@/components/ui/%s/%s'", oldName, oldName, oldName+"Content"), fmt.Sprintf("import { %sContent } from '@/components/ui/%s/%s'", oldName, newName, newName+"-content")},
 		}
 
-		for _, pattern := range importPatterns {
+		for _, pattern := range stringPatterns {
 			if strings.Contains(newContent, pattern.old) {
-				fmt.Printf("Found import to update in %s: %s -> %s\n", filePath, pattern.old, pattern.new)
+				fmt.Printf("Found string pattern to update in %s: %s -> %s\n", filePath, pattern.old, pattern.new)
 				newContent = strings.ReplaceAll(newContent, pattern.old, pattern.new)
+			}
+		}
+
+		regexPatterns := []struct {
+			old string
+			new string
+		}{
+
+			{
+				fmt.Sprintf(`([@~/]components/ui/)%s(/[^'"]+)`, oldName),
+				fmt.Sprintf(`${1}%s${2}`, newName),
+			},
+
+			{
+				fmt.Sprintf(`(['"][@~/]components/ui/)%s(['"])`, oldName),
+				fmt.Sprintf(`${1}%s${2}`, newName),
+			},
+
+			{
+				fmt.Sprintf(`([@~/]components/ui/%s/)%s`, oldName, oldName),
+				fmt.Sprintf(`${1}%s`, newName),
+			},
+
+			{
+				fmt.Sprintf(`([@~/]components/ui/%s/)%sContent`, oldName, oldName),
+				fmt.Sprintf(`${1}%s-content`, newName),
+			},
+		}
+
+		for _, pattern := range regexPatterns {
+			re := regexp.MustCompile(pattern.old)
+			if re.MatchString(newContent) {
+				fmt.Printf("Found regex pattern to update in %s: %s -> %s\n", filePath, pattern.old, pattern.new)
+				newContent = re.ReplaceAllString(newContent, pattern.new)
 			}
 		}
 	}
